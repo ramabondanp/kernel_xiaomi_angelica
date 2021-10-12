@@ -3,6 +3,7 @@
  * fs/f2fs/segment.h
  *
  * Copyright (c) 2012 Samsung Electronics Co., Ltd.
+ * Copyright (C) 2021 XiaoMi, Inc.
  *             http://www.samsung.com/
  */
 #include <linux/blkdev.h>
@@ -82,7 +83,7 @@
 	(GET_SEGOFF_FROM_SEG0(sbi, blk_addr) & ((sbi)->blocks_per_seg - 1))
 
 #define GET_SEGNO(sbi, blk_addr)					\
-	((!__is_valid_data_blkaddr(blk_addr)) ?			\
+	((!is_valid_data_blkaddr(sbi, blk_addr)) ?			\
 	NULL_SEGNO : GET_L2R_SEGNO(FREE_I(sbi),			\
 		GET_SEGNO_FROM_SEG0(sbi, blk_addr)))
 #define BLKS_PER_SEC(sbi)					\
@@ -109,7 +110,7 @@
 #define	START_SEGNO(segno)		\
 	(SIT_BLOCK_OFFSET(segno) * SIT_ENTRY_PER_BLOCK)
 #define SIT_BLK_CNT(sbi)			\
-	DIV_ROUND_UP(MAIN_SEGS(sbi), SIT_ENTRY_PER_BLOCK)
+	((MAIN_SEGS(sbi) + SIT_ENTRY_PER_BLOCK - 1) / SIT_ENTRY_PER_BLOCK)
 #define f2fs_bitmap_size(nr)			\
 	(BITS_TO_LONGS(nr) * sizeof(unsigned long))
 
@@ -229,6 +230,9 @@ struct sit_info {
 	char *sit_bitmap;		/* SIT bitmap pointer */
 #ifdef CONFIG_F2FS_CHECK_FS
 	char *sit_bitmap_mir;		/* SIT bitmap mirror */
+
+	/* bitmap of segments to be ignored by GC in case of errors */
+	unsigned long *invalid_segmap;
 #endif
 	unsigned int bitmap_size;	/* SIT bitmap size */
 
@@ -656,15 +660,14 @@ static inline void check_seg_range(struct f2fs_sb_info *sbi, unsigned int segno)
 	f2fs_bug_on(sbi, segno > TOTAL_SEGS(sbi) - 1);
 }
 
-static inline void verify_fio_blkaddr(struct f2fs_io_info *fio)
+static inline void verify_block_addr(struct f2fs_io_info *fio, block_t blk_addr)
 {
 	struct f2fs_sb_info *sbi = fio->sbi;
 
-	if (__is_valid_data_blkaddr(fio->old_blkaddr))
-		verify_blkaddr(sbi, fio->old_blkaddr, __is_meta_io(fio) ?
-					META_GENERIC : DATA_GENERIC);
-	verify_blkaddr(sbi, fio->new_blkaddr, __is_meta_io(fio) ?
-					META_GENERIC : DATA_GENERIC_ENHANCE);
+	if (__is_meta_io(fio))
+		verify_blkaddr(sbi, blk_addr, META_GENERIC);
+	else
+		verify_blkaddr(sbi, blk_addr, DATA_GENERIC);
 }
 
 /*
@@ -693,19 +696,21 @@ static inline int check_block_count(struct f2fs_sb_info *sbi,
 	} while (cur_pos < sbi->blocks_per_seg);
 
 	if (unlikely(GET_SIT_VBLOCKS(raw_sit) != valid_blocks)) {
-		f2fs_err(sbi, "Mismatch valid blocks %d vs. %d",
-			 GET_SIT_VBLOCKS(raw_sit), valid_blocks);
+		f2fs_msg(sbi->sb, KERN_ERR,
+				"Mismatch valid blocks %d vs. %d",
+					GET_SIT_VBLOCKS(raw_sit), valid_blocks);
 		set_sbi_flag(sbi, SBI_NEED_FSCK);
-		return -EFSCORRUPTED;
+		return -EINVAL;
 	}
 
 	/* check segment usage, and check boundary of a given segment number */
 	if (unlikely(GET_SIT_VBLOCKS(raw_sit) > sbi->blocks_per_seg
 					|| segno > TOTAL_SEGS(sbi) - 1)) {
-		f2fs_err(sbi, "Wrong valid blocks %d or segno %u",
-			 GET_SIT_VBLOCKS(raw_sit), segno);
+		f2fs_msg(sbi->sb, KERN_ERR,
+				"Wrong valid blocks %d or segno %u",
+					GET_SIT_VBLOCKS(raw_sit), segno);
 		set_sbi_flag(sbi, SBI_NEED_FSCK);
-		return -EFSCORRUPTED;
+		return -EINVAL;
 	}
 	return 0;
 }

@@ -18,7 +18,6 @@
 #include <linux/string.h>
 #include <linux/mm.h>
 #include <linux/fs.h>
-#include <linux/fscrypt.h>
 #include <linux/fsnotify.h>
 #include <linux/slab.h>
 #include <linux/init.h>
@@ -1622,7 +1621,11 @@ struct dentry *__d_alloc(struct super_block *sb, const struct qstr *name)
 		dname = p->name;
 		if (IS_ENABLED(CONFIG_DCACHE_WORD_ACCESS))
 			kasan_unpoison_shadow(dname,
-				round_up(name->len + 1,	sizeof(unsigned long)));
+#if defined(CONFIG_KASAN) && defined(CONFIG_KASAN_ENHANCEMENT)
+				round_up(name->len + 1,	16));
+#else
+				round_up(name->len + 1, sizeof(unsigned long)));
+#endif
 	} else  {
 		dname = dentry->d_iname;
 	}	
@@ -2879,7 +2882,6 @@ static void __d_move(struct dentry *dentry, struct dentry *target,
 			fsnotify_update_flags(target);
 		fsnotify_update_flags(dentry);
 	}
-	fscrypt_handle_d_move(dentry);
 
 	write_seqcount_end(&target->d_seq);
 	write_seqcount_end(&dentry->d_seq);
